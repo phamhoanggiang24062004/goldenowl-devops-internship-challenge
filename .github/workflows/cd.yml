@@ -1,0 +1,54 @@
+name: >-
+  Docker build image and push to Docker Hub
+  then trigger AWS Auto Scaling Instance Refresh
+  to create new EC2 instance and deploy new application.
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  docker-build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./src
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/goldenowl-devops-internship-challenge:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/goldenowl-devops-internship-challenge:${{ github.sha }}
+
+  deploy:
+    needs: docker-build
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::743186642343:oidc-provider/token.actions.githubusercontent.com
+          aws-region: ap-southeast-2
+          
+
+      - name: Trigger AWS Auto Scaling Instance Refresh
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name nodejs-app-auto-scaling \
+            --preferences '{"MinHealthyPercentage": 50}'
