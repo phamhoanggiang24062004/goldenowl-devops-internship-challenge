@@ -1,4 +1,4 @@
-FROM node:20-alpine AS base
+FROM node:20-bookworm-slim AS base
 
 ENV NODE_ENV=production
 
@@ -10,16 +10,18 @@ COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts \
     && npm cache clean --force
 
-FROM base AS production
+FROM gcr.io/distroless/nodejs20-debian12:nonroot AS production
 
-COPY --from=deps --chown=node:node /app/node_modules ./node_modules
-COPY --chown=node:node package*.json ./
-COPY --chown=node:node index.js ./
-COPY --chown=node:node routes ./routes
-COPY --chown=node:node server ./server
+ENV NODE_ENV=production
 
-USER node
+WORKDIR /app
+
+COPY --from=deps --chown=65532:65532 /app/node_modules ./node_modules
+COPY --chown=65532:65532 package*.json ./
+COPY --chown=65532:65532 index.js ./
+COPY --chown=65532:65532 routes ./routes
+COPY --chown=65532:65532 server ./server
 
 EXPOSE 3000
 
-CMD ["node", "index.js"]
+CMD ["index.js"]
