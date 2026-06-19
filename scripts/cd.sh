@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+trap 'echo "CD script failed at line ${LINENO}. Check the log above for the failing step." >&2' ERR
 
 APP_DIR="${APP_DIR:-src}"
 IMAGE_NAME="${IMAGE_NAME:-goldenowl-devops-internship-challenge}"
@@ -25,6 +26,13 @@ require_env() {
     echo "Missing required environment variable: $1" >&2
     exit 1
   fi
+}
+
+trim() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
 }
 
 shell_quote() {
@@ -66,14 +74,43 @@ build_and_push_image() {
 prepare_ssh_key() {
   require_command ssh
   require_command ssh-keyscan
+  require_command getent
   require_env EC2_HOST
   require_env EC2_USER
   require_env EC2_SSH_PRIVATE_KEY
 
+  EC2_HOST="$(trim "$EC2_HOST")"
+  EC2_USER="$(trim "$EC2_USER")"
+  EC2_SSH_PORT="$(trim "$EC2_SSH_PORT")"
+
+  if [[ "$EC2_HOST" == *"://"* || "$EC2_HOST" == *"@"* || "$EC2_HOST" == *"/"* ]]; then
+    echo "EC2_HOST must be only a hostname or public IP, for example 18.141.1.2 or ec2-x-x-x-x.ap-southeast-1.compute.amazonaws.com." >&2
+    echo "Do not include protocol, username, path, or an ssh command." >&2
+    exit 1
+  fi
+
+  if ! [[ "$EC2_SSH_PORT" =~ ^[0-9]+$ ]]; then
+    echo "EC2_SSH_PORT must be a number, for example 22." >&2
+    exit 1
+  fi
+
+  log "Resolve VM host"
+  if ! getent hosts "$EC2_HOST" >/dev/null; then
+    echo "Cannot resolve EC2_HOST. Check that the GitHub secret EC2_HOST is a valid public IP or public DNS name." >&2
+    echo "If this VM is private-only, GitHub-hosted runners cannot SSH to it directly." >&2
+    exit 1
+  fi
+
+  log "Prepare SSH key"
   mkdir -p ~/.ssh
   printf '%s\n' "$EC2_SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
   chmod 600 ~/.ssh/deploy_key
-  ssh-keyscan -p "$EC2_SSH_PORT" "$EC2_HOST" >> ~/.ssh/known_hosts
+
+  log "Add VM host key to known_hosts"
+  if ! ssh-keyscan -T 10 -p "$EC2_SSH_PORT" "$EC2_HOST" >> ~/.ssh/known_hosts; then
+    echo "ssh-keyscan failed. Check that port ${EC2_SSH_PORT} is open from the internet and the VM SSH service is running." >&2
+    exit 1
+  fi
 }
 
 deploy_to_vm() {
@@ -87,12 +124,17 @@ deploy_to_vm() {
   remote_env+=" CONTAINER_PORT=$(shell_quote "$CONTAINER_PORT")"
 
   log "Deploy application via SSH"
-  ssh \
+  if ! ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=20 \
+    -o ServerAliveInterval=10 \
+    -o ServerAliveCountMax=3 \
     -i ~/.ssh/deploy_key \
     -p "$EC2_SSH_PORT" \
     "${EC2_USER}@${EC2_HOST}" \
     "${remote_env} bash -s" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
+echo "Remote deploy started on $(hostname)"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "Missing required command on remote VM: docker" >&2
@@ -115,14 +157,20 @@ echo "Deploying image: ${IMAGE}"
 echo "Container name: ${CONTAINER_NAME}"
 echo "Port mapping: ${HOST_PORT}:${CONTAINER_PORT}"
 
+echo "Login to Docker Hub on remote VM"
 printf '%s' "$DOCKERHUB_TOKEN" | $DOCKER login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+echo "Pull image"
 $DOCKER pull "$IMAGE"
 
 if $DOCKER ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
+  echo "Stop existing container"
   $DOCKER stop "$CONTAINER_NAME"
+  echo "Remove existing container"
   $DOCKER rm "$CONTAINER_NAME"
 fi
 
+echo "Start new container"
 $DOCKER run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
@@ -130,7 +178,12 @@ $DOCKER run -d \
   "$IMAGE"
 
 $DOCKER ps --filter "name=${CONTAINER_NAME}"
+echo "Remote deploy completed"
 REMOTE_SCRIPT
+  then
+    echo "SSH deploy failed. Common causes: wrong EC2_USER, private key mismatch, port 22 blocked in security group, or remote Docker permission issue." >&2
+    exit 1
+  fi
 }
 
 build_and_push_image
