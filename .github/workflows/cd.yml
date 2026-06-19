@@ -39,7 +39,8 @@ jobs:
           EC2_SSH_PORT: ${{ secrets.EC2_SSH_PORT || '22' }}
           IMAGE_NAME: goldenowl-devops-internship-challenge
           IMAGE_TAG: ${{ github.sha }}
-          CONTAINER_NAME: goldenowl-nodejs-app
+          CONTAINER_NAME: Nodejs-app-container
+          APP_CONTAINER_NAMES: Nodejs-app-container goldenowl-nodejs-app
           HOST_PORT: 3000
           CONTAINER_PORT: 3000
         run: bash scripts/cd.sh
