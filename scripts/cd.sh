@@ -5,7 +5,8 @@ trap 'echo "CD script failed at line ${LINENO}. Check the log above for the fail
 APP_DIR="${APP_DIR:-src}"
 IMAGE_NAME="${IMAGE_NAME:-goldenowl-devops-internship-challenge}"
 IMAGE_TAG="${IMAGE_TAG:-$(git rev-parse HEAD)}"
-CONTAINER_NAME="${CONTAINER_NAME:-goldenowl-nodejs-app}"
+CONTAINER_NAME="${CONTAINER_NAME:-Nodejs-app-container}"
+APP_CONTAINER_NAMES="${APP_CONTAINER_NAMES:-$CONTAINER_NAME goldenowl-nodejs-app Nodejs-app-container}"
 HOST_PORT="${HOST_PORT:-3000}"
 CONTAINER_PORT="${CONTAINER_PORT:-3000}"
 EC2_SSH_PORT="${EC2_SSH_PORT:-22}"
@@ -120,6 +121,7 @@ deploy_to_vm() {
   remote_env+=" IMAGE_NAME=$(shell_quote "$IMAGE_NAME")"
   remote_env+=" IMAGE_TAG=$(shell_quote "$IMAGE_TAG")"
   remote_env+=" CONTAINER_NAME=$(shell_quote "$CONTAINER_NAME")"
+  remote_env+=" APP_CONTAINER_NAMES=$(shell_quote "$APP_CONTAINER_NAMES")"
   remote_env+=" HOST_PORT=$(shell_quote "$HOST_PORT")"
   remote_env+=" CONTAINER_PORT=$(shell_quote "$CONTAINER_PORT")"
 
@@ -163,19 +165,37 @@ printf '%s' "$DOCKERHUB_TOKEN" | $DOCKER login --username "$DOCKERHUB_USERNAME" 
 echo "Pull image"
 $DOCKER pull "$IMAGE"
 
-if $DOCKER ps -a --format '{{.Names}}' | grep -Fxq "$CONTAINER_NAME"; then
-  echo "Stop existing container"
-  $DOCKER stop "$CONTAINER_NAME"
-  echo "Remove existing container"
-  $DOCKER rm "$CONTAINER_NAME"
+for app_container_name in $APP_CONTAINER_NAMES; do
+  if $DOCKER ps -a --format '{{.Names}}' | grep -Fxq "$app_container_name"; then
+    echo "Stop existing app container: ${app_container_name}"
+    $DOCKER stop "$app_container_name" || true
+    echo "Remove existing app container: ${app_container_name}"
+    $DOCKER rm "$app_container_name"
+  fi
+done
+
+APP_IMAGE_CONTAINER_IDS="$($DOCKER ps -a -q --filter "ancestor=${DOCKERHUB_USERNAME}/${IMAGE_NAME}")"
+if [[ -n "$APP_IMAGE_CONTAINER_IDS" ]]; then
+  echo "Remove existing app containers created from image ${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+  $DOCKER stop $APP_IMAGE_CONTAINER_IDS || true
+  $DOCKER rm $APP_IMAGE_CONTAINER_IDS
 fi
 
 echo "Start new container"
-$DOCKER run -d \
-  --name "$CONTAINER_NAME" \
-  --restart unless-stopped \
-  -p "${HOST_PORT}:${CONTAINER_PORT}" \
-  "$IMAGE"
+if ! $DOCKER run -d \
+    --name "$CONTAINER_NAME" \
+    --restart unless-stopped \
+    -p "${HOST_PORT}:${CONTAINER_PORT}" \
+    "$IMAGE"; then
+  echo "Failed to start container. Port/process diagnostics:" >&2
+  $DOCKER ps -a >&2 || true
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :${HOST_PORT}" >&2 || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"${HOST_PORT}" -sTCP:LISTEN >&2 || true
+  fi
+  exit 1
+fi
 
 $DOCKER ps --filter "name=${CONTAINER_NAME}"
 echo "Remote deploy completed"
