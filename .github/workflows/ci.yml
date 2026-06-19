@@ -14,13 +14,8 @@ jobs:
   ci_test:
     runs-on: ubuntu-latest
 
-    defaults:
-      run:
-        working-directory: src
-
     steps:
       - name: Print GitHub trigger context
-        working-directory: .
         run: |
           echo "event_name=${{ github.event_name }}"
           echo "ref=${{ github.ref }}"
@@ -44,16 +39,5 @@ jobs:
           cache: npm
           cache-dependency-path: src/package-lock.json
 
-      - name: Print Node.js setup details
-        run: |
-          echo "working_directory=$(pwd)"
-          node --version
-          npm --version
-          npm config get cache
-          ls -la
-
-      - name: Install dependencies
-        run: npm ci --loglevel=verbose
-
-      - name: Run tests
-        run: npm test
+      - name: Run CI phase script
+        run: bash scripts/ci.sh
