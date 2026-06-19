@@ -40,6 +40,27 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+host_resolves() {
+  local host="$1"
+
+  if command -v getent >/dev/null 2>&1; then
+    getent hosts "$host" >/dev/null
+    return $?
+  fi
+
+  if command -v nslookup >/dev/null 2>&1; then
+    nslookup "$host" >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v ping >/dev/null 2>&1; then
+    ping -n 1 "$host" >/dev/null 2>&1 || ping -c 1 "$host" >/dev/null 2>&1
+    return $?
+  fi
+
+  return 0
+}
+
 build_and_push_image() {
   require_command docker
   require_env DOCKERHUB_USERNAME
@@ -75,7 +96,6 @@ build_and_push_image() {
 prepare_ssh_key() {
   require_command ssh
   require_command ssh-keyscan
-  require_command getent
   require_env EC2_HOST
   require_env EC2_USER
   require_env EC2_SSH_PRIVATE_KEY
@@ -96,7 +116,7 @@ prepare_ssh_key() {
   fi
 
   log "Resolve VM host"
-  if ! getent hosts "$EC2_HOST" >/dev/null; then
+  if ! host_resolves "$EC2_HOST"; then
     echo "Cannot resolve EC2_HOST. Check that the GitHub secret EC2_HOST is a valid public IP or public DNS name." >&2
     echo "If this VM is private-only, GitHub-hosted runners cannot SSH to it directly." >&2
     exit 1
